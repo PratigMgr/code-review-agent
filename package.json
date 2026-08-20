@@ -1,0 +1,28 @@
+{
+  "name": "ai-code-review-agent",
+  "version": "0.1.0",
+  "description": "An AI agent that reviews GitHub PRs against a repo's own conventions, with a built-in eval harness to measure review quality.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch webhook-listener/server.ts",
+    "build": "tsc",
+    "start": "node dist/webhook-listener/server.js",
+    "index-repo": "tsx scripts/index-repo.ts",
+    "eval": "tsx eval-harness/run-evals.ts"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "express": "^4.21.1",
+    "@octokit/rest": "^21.0.2",
+    "@octokit/webhooks": "^13.3.0",
+    "dotenv": "^16.4.5",
+    "simple-git": "^3.27.0",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
