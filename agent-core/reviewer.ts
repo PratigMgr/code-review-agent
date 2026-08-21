@@ -55,35 +55,89 @@ Diff shows: "export function clamp(value, min, max) { return Math.min(Math.max(v
 Correct output: { "comments": [] }
 (This is correct and complete as written — do not suggest docs, edge-case handling, or exports it doesn't need.)`;
 
-async function callGroq(userMessage: string): Promise<string> {
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.groqApiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.groqModel,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
-      ],
-    }),
-  });
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  if (!res.ok) {
+// Groq's free tier enforces a tokens-per-minute limit, not just a request
+// count, so bursts of calls (e.g. reviewing several files in one PR, or
+// running the eval suite) can hit 429s even at low request volume. Retry
+// with the server's own suggested wait time when it's available.
+function parseRetryAfterSeconds(errorBody: string): number | null {
+  const match = errorBody.match(/try again in ([\d.]+)s/i);
+  return match ? parseFloat(match[1]) : null;
+}
+
+const MAX_RETRIES = 3;
+
+async function callGroq(userMessage: string): Promise<string> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.groqApiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.groqModel,
+          temperature: 0,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: userMessage },
+          ],
+        }),
+      });
+    } catch (err) {
+      // fetch() itself threw — a network-level failure (dropped connection,
+      // DNS blip, timeout), not an HTTP error response. There's no res.status
+      // to inspect here, so this can't be told apart from a 429 by status
+      // code; just back off and retry the same as a rate limit.
+      if (attempt < MAX_RETRIES) {
+        const waitSeconds = 2 ** attempt * 5;
+        console.log(
+          `[callGroq] Network error (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ` +
+            `${(err as Error).message}. Waiting ${waitSeconds}s before retrying...`
+        );
+        await sleep(waitSeconds * 1000);
+        continue;
+      }
+      throw new Error(
+        `Groq request failed after ${MAX_RETRIES + 1} attempts due to network errors: ${
+          (err as Error).message
+        }`
+      );
+    }
+
+    if (res.ok) {
+      const data = (await res.json()) as {
+        choices: { message: { content: string } }[];
+      };
+      return data.choices[0].message.content;
+    }
+
+    const body = await res.text();
+
+    if (res.status === 429 && attempt < MAX_RETRIES) {
+      const waitSeconds = parseRetryAfterSeconds(body) ?? 2 ** attempt * 5;
+      console.log(
+        `[callGroq] Rate limited (attempt ${attempt + 1}/${MAX_RETRIES + 1}). ` +
+          `Waiting ${waitSeconds.toFixed(1)}s before retrying...`
+      );
+      await sleep(waitSeconds * 1000 + 500); // small buffer past the server's estimate
+      continue;
+    }
+
     throw new Error(
-      `Groq request failed: ${res.status} ${await res.text()}. ` +
+      `Groq request failed: ${res.status} ${body}. ` +
         `Check that GROQ_API_KEY is set and the "${config.groqModel}" model name is valid.`
     );
   }
 
-  const data = (await res.json()) as {
-    choices: { message: { content: string } }[];
-  };
-  return data.choices[0].message.content;
+  // Unreachable, but keeps TypeScript happy about the return type.
+  throw new Error('Groq request failed after retries.');
 }
 export async function reviewDiff(diff: FileDiff): Promise<ReviewComment[]> {
   console.log(`[reviewDiff] Retrieving context for ${diff.filePath}...`);
@@ -118,6 +172,13 @@ ${diff.patch}`;
 }
 
 export async function reviewPullRequest(diffs: FileDiff[]): Promise<ReviewComment[]> {
-  const results = await Promise.all(diffs.map(reviewDiff));
+  // Sequential, not Promise.all: reviewing files in parallel multiplies the
+  // chance of hitting Groq's tokens-per-minute limit on a multi-file PR.
+  // callGroq already retries on 429, but going one file at a time keeps
+  // requests spread out instead of bursting all at once.
+  const results: ReviewComment[][] = [];
+  for (const diff of diffs) {
+    results.push(await reviewDiff(diff));
+  }
   return results.flat();
 }
