@@ -4,6 +4,19 @@ An agent that reviews GitHub pull requests against a repo's **own existing conve
 (learned via embeddings of the codebase itself) rather than generic linting rules —
 with a built-in eval harness that objectively scores review quality.
 
+## Demo — seeing it work end-to-end
+
+A pull request gets opened, the agent reviews the diff against the repo's own conventions,
+and posts its verdict as a comment automatically — no manual step required:
+
+![AI review comment posted on a merged pull request](./screenshots/pr-review-comment.png)
+
+Behind the scenes, the deployed webhook listener picks up the PR event, retrieves relevant
+context from the vector store, calls Groq, and posts the result — all visible in real time
+in the service logs:
+
+![Render logs showing the full review pipeline running](./screenshots/render-logs.png)
+
 ## Why this exists
 
 Most "AI code review" demos are a thin wrapper around a single prompt: send the diff,
@@ -91,6 +104,12 @@ or local model server to host alongside it.
 Render's free tier CPU is enough for this — the only local compute is the
 small embedding model, and it's just running inference on short code chunks
 at request time, not training or indexing at scale.
+
+> **Note on Render's free tier:** the instance spins down after inactivity, which
+> can delay the first webhook delivery by 30–60+ seconds while it wakes back up
+> (visible above in the logs as a full `Deploying...` → `Your service is live` cycle).
+> For a demo you plan to show live, either keep the service warm with a periodic
+> ping to `/health`, or expect — and mention — that first-request delay.
 
 ## The eval harness (the differentiator)
 
