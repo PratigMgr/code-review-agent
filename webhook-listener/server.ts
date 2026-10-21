@@ -1,7 +1,9 @@
+import path from 'node:path';
 import express from 'express';
 import { Webhooks, createNodeMiddleware } from '@octokit/webhooks';
 import { config, octokit } from '../agent-core/config.js';
 import { reviewPullRequest, type FileDiff } from '../agent-core/reviewer.js';
+import { registerChat } from './chat.js';
 
 const webhooks = new Webhooks({ secret: config.githubWebhookSecret });
 
@@ -78,6 +80,14 @@ async function handlePullRequest({ payload }: { payload: any }) {
 
 const app = express();
 app.use('/webhook', createNodeMiddleware(webhooks, { path: '/' }));
+// Static eval dashboard: the page plus the saved eval history it reads.
+app.use('/dashboard', express.static(path.resolve('dashboard')));
+app.get('/dashboard/data', (_req, res) => {
+  res.sendFile(path.resolve('data/eval-results.json'), (err) => {
+    if (err) res.json([]); // no eval run saved yet
+  });
+});
+registerChat(app); // POST /dashboard/chat — the dashboard's Groq assistant
 app.get('/health', (_req, res) => res.send('ok'));
 
 app.listen(config.port, () => {
