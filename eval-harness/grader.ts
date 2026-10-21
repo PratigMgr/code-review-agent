@@ -39,7 +39,11 @@ export function gradeCase(evalCase: EvalCase, actualComments: ReviewComment[]): 
       allExpectedFound = false;
       notes.push(
         `Missed expected issue (keywords: ${expected.mustMentionKeywords.join('/')}, ` +
-          `min severity: ${expected.minSeverity})`
+          `min severity: ${expected.minSeverity}). ` +
+          (actualComments.length === 0
+            ? 'Agent returned NO comments.'
+            : 'Agent said: ' +
+              actualComments.map((c) => `[${c.severity}] "${c.comment}"`).join('; '))
       );
     }
   }
