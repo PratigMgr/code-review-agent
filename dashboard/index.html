@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review Agent Evals</title>
+<style>
+  :root {
+    --bg: #fafaf9; --surface: #ffffff; --text: #1c1917; --muted: #78716c; --border: #e7e5e4;
+    --on: #2563eb; --off: #a8a29e; --pass: #15803d; --fail: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131211; --surface: #1c1a19; --text: #f5f5f4; --muted: #a8a29e; --border: #2e2b29;
+            --on: #60a5fa; --off: #78716c; --pass: #4ade80; --fail: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+       margin: 32px 0 12px; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .tile, .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .tile .label { color: var(--muted); font-size: 13px; }
+  .tile .value { font-size: 32px; font-weight: 650; line-height: 1.2; margin-top: 2px; }
+  .tile .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .legend { display: flex; gap: 16px; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { fill: var(--muted); font-size: 11px; }
+  .grid line { stroke: var(--border); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-size: 12px; font-weight: 600; }
+  td.status { white-space: nowrap; font-weight: 600; }
+  .pass { color: var(--pass); } .fail { color: var(--fail); } .na { color: var(--muted); font-weight: 400; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .empty { text-align: center; padding: 40px 16px; color: var(--muted); }
+  code { background: var(--border); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+  .err { color: #b45309; } @media (prefers-color-scheme: dark) { .err { color: #fbbf24; } }
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+         border: 1px solid var(--border); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
+  .tag.up { color: var(--pass); border-color: var(--pass); } .tag.down { color: var(--fail); border-color: var(--fail); }
+  .controls { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 0 0 10px; }
+  .controls label { cursor: pointer; }
+  .banner { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid #b45309;
+            border-radius: 8px; padding: 10px 14px; font-size: 13px; color: var(--muted); margin-top: 16px; }
+  details summary { cursor: pointer; list-style: none; } details summary::-webkit-details-marker { display: none; }
+  details summary::before { content: '▸ '; color: var(--muted); } details[open] summary::before { content: '▾ '; }
+  .note { white-space: pre-wrap; word-break: break-word; }
+  /* ---- Side assistant: Groq tab on the right edge + slide-out drawer ---- */
+  .logo { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; flex: none; overflow: hidden;
+          background: #fff; border: 2px solid #f55036; color: #f55036; font-weight: 800; font-size: 16px; }
+  .logo img { width: 100%; height: 100%; object-fit: contain; display: block; padding: 4px; box-sizing: border-box; }
+  .logo img ~ .fb { display: none; }
+  .launcher { position: fixed; right: 18px; top: 50%; transform: translateY(-50%); z-index: 50; cursor: pointer;
+              width: 60px; height: 60px; padding: 0; border-radius: 50%; border: 0; background: transparent;
+              box-shadow: 0 4px 16px rgba(0,0,0,.28); transition: transform .15s ease, box-shadow .15s ease; }
+  .launcher .logo { width: 100%; height: 100%; font-size: 28px; border-width: 3px; }
+  .launcher:hover, .launcher:focus-visible { transform: translateY(-50%) scale(1.08); box-shadow: 0 6px 22px rgba(245,80,54,.45); outline: none; }
+  .launcher::after { content: ''; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid #f55036; opacity: 0;
+                     animation: ring 2.6s ease-out 1.2s 3; pointer-events: none; }
+  @keyframes ring { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.5); opacity: 0; } }
+  .cloud { position: fixed; right: 86px; top: calc(50% - 30px); z-index: 49; width: 136px; height: 72px; pointer-events: none;
+           opacity: 0; transform: translateX(8px); transition: opacity .25s ease, transform .25s ease; filter: drop-shadow(0 3px 8px rgba(0,0,0,.15)); }
+  .cloud.show, .launcher:hover ~ .cloud, .launcher:focus-visible ~ .cloud { opacity: 1; transform: none; }
+  .cloud svg { width: 100%; height: 100%; overflow: visible; }
+  .cloud .shape { fill: var(--surface); stroke: #f55036; stroke-width: 2; }
+  .cloud .cover { fill: var(--surface); stroke: none; }
+  .cloud text { fill: var(--text); font: 600 14px system-ui, sans-serif; }
+  body.chat-open .launcher, body.chat-open .cloud { display: none; }
+  @media (max-width: 560px) { .cloud { display: none; } }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; max-width: 100vw; z-index: 60;
+            background: var(--surface); border-left: 1px solid var(--border); box-shadow: -4px 0 24px rgba(0,0,0,.15);
+            display: flex; flex-direction: column; transform: translateX(105%); transition: transform .22s ease; visibility: hidden; }
+  body.chat-open .drawer { transform: none; visibility: visible; }
+  .drawer-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .drawer-head .title { font-weight: 650; flex: 1; }
+  .drawer-head .sub2 { color: var(--muted); font-size: 12px; font-weight: 400; display: block; }
+  .drawer-close { font: inherit; font-size: 20px; line-height: 1; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+  .drawer-close:hover { background: var(--bg); color: var(--text); }
+  .drawer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+  .chat-log { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; overflow-y: auto; }
+  @media (min-width: 1280px) { body.chat-open { padding-right: 380px; } }
+  .msg { padding: 8px 12px; border-radius: 10px; font-size: 14px; white-space: pre-wrap; word-break: break-word; max-width: 92%; }
+  .msg.user { align-self: flex-end; background: var(--on); color: #fff; }
+  .msg.bot { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); }
+  .msg.bot pre { background: var(--surface); border: 1px solid var(--border); padding: 8px; border-radius: 6px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; }
+  .msg.bot code { font-size: 13px; }
+  .msg.bad { color: var(--fail); }
+  .msg p { margin: 0 0 6px; } .msg p:last-child { margin-bottom: 0; }
+  .msg .h { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 10px 0 3px; }
+  .msg .h:first-child { margin-top: 0; }
+  .msg .meta { font-size: 11px; color: var(--muted); margin-top: 8px; }
+  .codewrap { position: relative; }
+  .codewrap pre { padding-right: 64px; }
+  .codewrap .copy { position: absolute; top: 12px; right: 6px; font: inherit; font-size: 11px; padding: 1px 8px; border-radius: 6px;
+                    border: 1px solid var(--border); background: var(--bg); color: var(--muted); cursor: pointer; }
+  .codewrap .copy:hover { color: var(--text); border-color: var(--on); }
+  .msg ul, .msg ol { margin: 2px 0 6px; padding-left: 20px; } .msg li { margin: 2px 0; }
+  .msg table { border-collapse: collapse; font-size: 12.5px; margin: 6px 0; display: block; overflow-x: auto; }
+  .msg th, .msg td { border: 1px solid var(--border); padding: 3px 7px; text-align: left; }
+  .msg.bot code { background: var(--surface); padding: 0 4px; border-radius: 4px; }
+  .msg.bot pre code { background: none; padding: 0; }
+  .msg.pending { color: var(--muted); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips[hidden] { display: none; }
+  .chip { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+          background: var(--surface); color: var(--text); cursor: pointer; }
+  .chip:hover { border-color: var(--on); }
+  .chat-form { display: flex; gap: 8px; }
+  .chat-form textarea { flex: 1; font: inherit; font-size: 14px; resize: vertical; min-height: 40px; max-height: 160px; padding: 8px 10px;
+                        border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+  .chat-form button { font: inherit; font-weight: 600; padding: 0 16px; border: 0; border-radius: 8px; background: var(--on); color: #fff; cursor: pointer; }
+  .chat-form button:disabled { opacity: .5; cursor: default; }
+  @media (max-width: 560px) { .hide-sm { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Review Agent Evals</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <div id="content"></div>
+
+</main>
+
+<button class="launcher" id="launcher" type="button" aria-label="Open the Groq assistant" aria-controls="assistant">
+  <span class="logo"><img src="groq-logo.svg" alt="" onerror="this.remove()"><span class="fb">G</span></span>
+</button>
+<div class="cloud" id="cloud" aria-hidden="true">
+  <svg viewBox="0 0 136 72">
+    <g class="shape"><circle cx="30" cy="40" r="16"/><circle cx="54" cy="30" r="21"/><circle cx="82" cy="32" r="18"/><circle cx="100" cy="42" r="14"/><rect x="30" y="36" width="70" height="20" rx="10"/><circle cx="118" cy="54" r="5"/><circle cx="127" cy="62" r="3"/></g>
+    <g class="cover"><circle cx="30" cy="40" r="16"/><circle cx="54" cy="30" r="21"/><circle cx="82" cy="32" r="18"/><circle cx="100" cy="42" r="14"/><rect x="30" y="36" width="70" height="20" rx="10"/></g>
+    <text x="64" y="42" text-anchor="middle">Ask Groq</text>
+  </svg>
+</div>
+
+<aside class="drawer" id="assistant" aria-label="Groq assistant" aria-hidden="true">
+  <div class="drawer-head">
+    <span class="logo"><img src="groq-logo.svg" alt="" onerror="this.remove()"><span class="fb">G</span></span>
+    <div class="title">Groq assistant<span class="sub2">Ask about your eval results</span></div>
+    <button class="drawer-close" id="drawerClose" type="button" aria-label="Close assistant">×</button>
+  </div>
+  <div class="drawer-body">
+    <div class="chat-log" id="chatLog" aria-live="polite"></div>
+    <div class="chips" id="chips">
+      <button class="chip" type="button">Summarize the latest results</button>
+      <button class="chip" type="button">Why did the failing cases fail?</button>
+      <button class="chip" type="button">Give me the exact prompt change to fix them</button>
+      <button class="chip" type="button">Which cases are flaky?</button>
+      <button class="chip" type="button">Is retrieval worth it?</button>
+      <button class="chip" type="button">How does this agent work?</button>
+    </div>
+    <form class="chat-form" id="chatForm">
+      <textarea id="chatInput" rows="1" placeholder="Ask about your eval results…"></textarea>
+      <button id="chatSend" type="submit">Send</button>
+    </form>
+    <div class="note">Answers come from Groq using your saved eval results and the reviewer prompt. They can be wrong, so check before acting.</div>
+  </div>
+</aside>
+
+<script>
+(async function () {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const pct = (r) => (r.total ? Math.round((r.passed / r.total) * 100) : 0);
+  const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const isErr = (c) => c.notes.some((n) => n.startsWith('Threw an error'));
+  const runErrored = (r) => r.cases.some(isErr);
+  const isClean = (id) => id.startsWith('clean-');
+  const state = { showErrored: false, onlyFailing: false };
+
+  let all = [];
+  try {
+    const res = await fetch('data');
+    all = res.ok ? await res.json() : [];
+  } catch (e) { all = []; }
+
+  if (!Array.isArray(all) || all.length === 0) {
+    $('sub').textContent = 'No eval runs saved yet.';
+    $('content').innerHTML = '<div class="panel empty">Run <code>npm run eval -- --both</code> to score the agent with and without repo retrieval. Results appear here.</div>';
+    return;
+  }
+  all.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+  function render() {
+    const erroredCount = all.filter(runErrored).length;
+    const runs = state.showErrored ? all : all.filter((r) => !runErrored(r));
+    const last = all[all.length - 1];
+    $('sub').textContent = all.length + ' run' + (all.length === 1 ? '' : 's') + ' · last ' + when(last.timestamp) + ' · model ' + last.model;
+
+    if (!runs.length) {
+      $('content').innerHTML = '<div class="banner">Every saved run hit API errors (e.g. rate limits), so there are no real scores yet. ' +
+        '<label><input type="checkbox" id="showErr"> show them anyway</label></div>';
+      $('showErr').onchange = (e) => { state.showErrored = e.target.checked; render(); };
+      return;
+    }
+
+    const ofMode = (flag) => runs.filter((r) => r.retrieval === flag);
+    const lOn = ofMode(true).slice(-1)[0], lOff = ofMode(false).slice(-1)[0];
+    const pOn = ofMode(true).slice(-2, -1)[0], pOff = ofMode(false).slice(-2, -1)[0];
+
+    // bugs caught vs false alarms
+    const split = (r) => {
+      const bugs = r.cases.filter((c) => !isClean(c.caseId)), clean = r.cases.filter((c) => isClean(c.caseId));
+      return { bugsOk: bugs.filter((c) => c.passed).length, bugs: bugs.length,
+               cleanOk: clean.filter((c) => c.passed).length, clean: clean.length };
+    };
+
+    const tile = (label, r) => {
+      if (!r) return '<div class="tile"><div class="label">' + label + '</div><div class="value na">–</div><div class="meta">not run yet</div></div>';
+      const sp = split(r);
+      return '<div class="tile"><div class="label">' + label + '</div><div class="value">' + pct(r) + '%</div>' +
+        '<div class="meta">' + r.passed + ' / ' + r.total + ' cases · ' + when(r.timestamp) + '</div>' +
+        '<div class="meta">Bugs caught ' + sp.bugsOk + '/' + sp.bugs + ' · Clean code left alone ' + sp.cleanOk + '/' + sp.clean + '</div></div>';
+    };
+    let delta = '';
+    if (lOn && lOff) {
+      const d = pct(lOn) - pct(lOff);
+      delta = '<div class="tile"><div class="label">Effect of retrieval</div><div class="value">' +
+        (d > 0 ? '+' : '') + d + ' pts</div><div class="meta">latest ON vs latest OFF</div></div>';
+    }
+
+    // history chart
+    const W = 800, H = 220, L = 36, R = 12, T = 12, B = 28;
+    const x = (i, n) => L + (n <= 1 ? (W - L - R) / 2 : (i / (n - 1)) * (W - L - R));
+    const y = (p) => T + (1 - p / 100) * (H - T - B);
+    const series = (flag, color) => {
+      const pts = runs.map((r, i) => [x(i, runs.length), y(pct(r)), r]).filter((p) => p[2].retrieval === flag);
+      if (!pts.length) return '';
+      const path = pts.length > 1 ? '<polyline fill="none" stroke="' + color + '" stroke-width="2" points="' + pts.map((p) => p[0] + ',' + p[1]).join(' ') + '"/>' : '';
+      const dots = pts.map((p) => '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="4" fill="' + color + '"><title>' +
+        esc(when(p[2].timestamp) + ': ' + p[2].passed + '/' + p[2].total + ' (' + pct(p[2]) + '%)') + '</title></circle>').join('');
+      return path + dots;
+    };
+    const grid = [0, 25, 50, 75, 100].map((p) =>
+      '<g class="grid"><line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(p) + '" y2="' + y(p) + '"/><text x="' + (L - 6) + '" y="' + (y(p) + 4) + '" text-anchor="end">' + p + '%</text></g>').join('');
+    const chart =
+      '<div class="panel"><div class="legend"><span><span class="dot" style="background:var(--on)"></span>Retrieval on</span>' +
+      '<span><span class="dot" style="background:var(--off)"></span>Retrieval off</span></div>' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Eval pass rate per run, retrieval on versus off">' +
+      grid + series(false, 'var(--off)') + series(true, 'var(--on)') +
+      '<text x="' + L + '" y="' + (H - 6) + '">oldest run</text><text x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">latest run</text></svg></div>';
+
+    // per-case table
+    const find = (r, id) => r && r.cases.find((c) => c.caseId === id);
+    const status = (c) => !c ? '<td class="status na">–</td>'
+      : c.passed ? '<td class="status pass">Pass</td>'
+      : isErr(c) ? '<td class="status err">Error</td>' : '<td class="status fail">Fail</td>';
+    const change = (id) => {
+      const out = [];
+      for (const [label, cur, prev] of [['ON', lOn, pOn], ['OFF', lOff, pOff]]) {
+        const a = find(cur, id), b = find(prev, id);
+        if (!a || !b || a.passed === b.passed) continue;
+        out.push('<span class="tag ' + (a.passed ? 'up' : 'down') + '">' + label + (a.passed ? ' fixed' : ' broke') + '</span>');
+      }
+      return out.join('');
+    };
+    const details = (id) => {
+      const items = [];
+      for (const [label, r] of [['on', lOn], ['off', lOff]]) {
+        const c = find(r, id);
+        if (c && !c.passed) c.notes.forEach((n) => items.push('<div class="note">(retrieval ' + label + ') ' + esc(n) + '</div>'));
+      }
+      return items.length ? '<details><summary>' + esc(id) + '</summary>' + items.join('') + '</details>' : esc(id);
+    };
+    const ids = [...new Set(runs.flatMap((r) => r.cases.map((c) => c.caseId)))];
+    const failing = (id) => [find(lOn, id), find(lOff, id)].some((c) => c && !c.passed);
+    const shown = ids.filter((id) => !state.onlyFailing || failing(id));
+    const rows = shown.map((id) =>
+      '<tr><td>' + details(id) + change(id) + '<div class="note">' + (isClean(id) ? 'clean code (should stay quiet)' : 'contains a bug (should be flagged)') + '</div></td>' +
+      status(find(lOn, id)) + status(find(lOff, id)) + '</tr>').join('');
+
+    const banner = erroredCount && !state.showErrored
+      ? '<div class="banner">' + erroredCount + ' run' + (erroredCount === 1 ? '' : 's') + ' hidden: at least one case hit an API error (usually Groq rate limits), so the score is not meaningful.</div>' : '';
+
+    $('content').innerHTML =
+      banner +
+      '<h2>Latest scores</h2><div class="tiles">' + tile('Retrieval on', lOn) + tile('Retrieval off', lOff) + delta + '</div>' +
+      '<h2>Pass rate by run</h2>' + chart +
+      '<h2>Cases (latest runs)</h2>' +
+      '<div class="controls"><label><input type="checkbox" id="onlyFail"' + (state.onlyFailing ? ' checked' : '') + '> only failing cases</label>' +
+      '<label><input type="checkbox" id="showErr"' + (state.showErrored ? ' checked' : '') + '> include errored runs</label></div>' +
+      '<div class="panel" style="padding:4px 16px 8px"><table>' +
+      '<thead><tr><th>Case (click a failure to see why)</th><th>Retrieval on</th><th>Retrieval off</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="3" class="na">Nothing failing. 🎉</td></tr>') + '</tbody></table></div>';
+
+    $('onlyFail').onchange = (e) => { state.onlyFailing = e.target.checked; render(); };
+    $('showErr').onchange = (e) => { state.showErrored = e.target.checked; render(); };
+  }
+  render();
+})();
+</script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const inline = (t) => esc(t)
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*\w])\*([^*\s][^*\n]*?)\*(?!\w)/g, '$1<em>$2</em>');
+  const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => inline(c.trim()));
+  function block(seg) {
+    const out = []; let list = null, table = null;
+    const close = () => {
+      if (list) { out.push('</' + list + '>'); list = null; }
+      if (table) { out.push('<table>' + table.join('') + '</table>'); table = null; }
+    };
+    for (const line of seg.split('\n')) {
+      let m;
+      if (!line.trim()) { close(); continue; }
+      if (/^\s*\|/.test(line)) {
+        if (/^[\s|:\-]+$/.test(line)) continue; // table separator row
+        if (list) close();
+        const first = !table; table = table || [];
+        table.push('<tr>' + cells(line).map((c) => (first ? '<th>' : '<td>') + c + (first ? '</th>' : '</td>')).join('') + '</tr>');
+      } else if ((m = line.match(/^\s*[-*•]\s+(.*)/))) {
+        if (list !== 'ul') { close(); out.push('<ul>'); list = 'ul'; }
+        out.push('<li>' + inline(m[1]) + '</li>');
+      } else if ((m = line.match(/^\s*(\d+)[.)]\s+(.*)/))) {
+        if (list !== 'ol') { close(); out.push('<ol>'); list = 'ol'; }
+        out.push('<li value="' + m[1] + '">' + inline(m[2]) + '</li>'); // keep the model's numbering across code blocks
+      } else if ((m = line.match(/^#{1,4}\s+(.*)/))) {
+        close(); out.push('<p class="h">' + inline(m[1]) + '</p>');
+      } else { close(); out.push('<p>' + inline(line) + '</p>'); }
+    }
+    close();
+    return out.join('');
+  }
+  // Odd-numbered pieces are fenced code blocks, even-numbered pieces are normal text.
+  const fmt = (t) => String(t).split(/```[\w-]*\n?/).map((seg, i) =>
+    i % 2 ? '<div class="codewrap"><button class="copy" type="button">Copy</button><pre><code>' + esc(seg.replace(/\n$/, '')) + '</code></pre></div>' : block(seg)).join('');
+  const log = $('chatLog'), input = $('chatInput'), send = $('chatSend');
+  const history = [];
+  let busy = false;
+
+  function add(role, html, cls) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + role + (cls ? ' ' + cls : '');
+    d.innerHTML = html;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    return d;
+  }
+
+  async function ask(text) {
+    text = text.trim();
+    if (!text || busy) return;
+    busy = true; send.disabled = true;
+    input.value = '';
+    add('user', esc(text));
+    history.push({ role: 'user', content: text });
+    const t0 = performance.now();
+    const pending = add('bot', 'Reading your eval data…', 'pending');
+    $('chips').hidden = true;
+    try {
+      const res = await fetch('chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || ('Request failed (' + res.status + ')'));
+      }
+      // The server streams the answer: show it as it arrives instead of waiting for the end.
+      const source = res.headers.get('X-Answer-Source');
+      let text = '', queued = false;
+      const paint = () => {
+        queued = false;
+        pending.classList.remove('pending');
+        pending.innerHTML = fmt(text);
+        log.scrollTop = log.scrollHeight;
+      };
+      if (res.body && res.body.getReader) {
+        const reader = res.body.getReader(), dec = new TextDecoder();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          text += dec.decode(value, { stream: true });
+          if (!queued) { queued = true; requestAnimationFrame(paint); }
+        }
+      } else {
+        text = await res.text();
+      }
+      if (!text.trim()) throw new Error('Empty answer, please try again.');
+      history.push({ role: 'assistant', content: text });
+      pending.classList.remove('pending');
+      pending.innerHTML = fmt(text) + '<div class="meta">answered in ' + ((performance.now() - t0) / 1000).toFixed(1) + 's' + (source === 'instant' ? ' · ⚡ instant, computed from your saved results' : source === 'cache' ? ' · ⚡ remembered answer' : '') + '</div>';
+    } catch (e) {
+      history.pop(); // drop the unanswered question so a retry doesn't double up
+      pending.className = 'msg bot bad';
+      $('chips').hidden = false;
+      pending.textContent = 'Could not get an answer: ' + e.message;
+    } finally {
+      busy = false; send.disabled = false; input.focus();
+      log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  function setOpen(open) {
+    document.body.classList.toggle('chat-open', open);
+    $('assistant').setAttribute('aria-hidden', String(!open));
+    if (open) input.focus(); else $('launcher').focus();
+  }
+  add('bot', fmt("Hi! I can read your eval results and help you improve the reviewer.\n- Explain **why** cases failed\n- Suggest the **exact prompt change** to fix them\n- Compare **retrieval ON vs OFF** and spot flaky cases\n\nPick a question below or ask your own."));
+  log.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.copy');
+    if (!btn) return;
+    try { await navigator.clipboard.writeText(btn.nextElementSibling.innerText); btn.textContent = 'Copied'; }
+    catch { btn.textContent = 'Press Ctrl+C'; }
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  });
+  const cloud = $('cloud');
+  setTimeout(() => cloud.classList.add('show'), 600);
+  setTimeout(() => cloud.classList.remove('show'), 7500);
+  $('launcher').addEventListener('click', () => setOpen(true));
+  $('drawerClose').addEventListener('click', () => setOpen(false));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('chat-open')) setOpen(false); });
+
+  $('chatForm').addEventListener('submit', (e) => { e.preventDefault(); ask(input.value); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(input.value); }
+  });
+  $('chips').addEventListener('click', (e) => {
+    if (e.target.classList.contains('chip')) ask(e.target.textContent);
+  });
+})();
+</script>
+</body>
+</html>
