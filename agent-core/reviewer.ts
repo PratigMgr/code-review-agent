@@ -36,6 +36,11 @@ Rules:
   leaks after unmount. This is "blocking".
 - Always flag logging (console.log, logger.*) of secrets, tokens, passwords, or
   other credentials — this is "blocking" since it leaks them into log storage.
+- Always flag SQL built by string concatenation or template interpolation with
+  variables or user input (e.g. "... WHERE name = '" + name + "'"). This is SQL
+  injection and is "blocking"; recommend parameterized queries / prepared
+  statements. (This does NOT apply to queries that already use placeholders
+  such as $1 or ? with a separate parameters array.)
 - Always flag awaited I/O calls (network requests, database, filesystem) that
   have no try/catch or .catch() visible in the diff — a rejection becomes an
   unhandled error. Use "suggestion" severity. (This does NOT apply if the diff
@@ -75,12 +80,7 @@ Correct output: { "comments": [] }
 (This is correct and complete as written — do not suggest docs, edge-case handling, or exports it doesn't need.)`;
 
 const MAX_RETRIES = 6;
-// Groq's free tier allows ~8,000 tokens/minute, so every token we send slows the eval run.
-// Fewer / shorter retrieved chunks = more requests per minute. Tune via .env if needed.
-const RETRIEVAL_TOP_K = Number(process.env.RETRIEVAL_TOP_K) || 3;
-const CHUNK_MAX_CHARS = Number(process.env.CHUNK_MAX_CHARS) || 900;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const clipBody = (s: string) => (s.length > 200 ? s.slice(0, 200) + '…' : s);
 
 /** How long Groq wants us to wait after a 429, in ms (header first, then message text). */
 function retryDelayMs(res: Response, body: string, attempt: number): number {
@@ -99,11 +99,9 @@ export interface ChatMessage {
 /** Shared Groq call with rate-limit retry. Used by the reviewer and the dashboard assistant. */
 export async function groqChat(
   messages: ChatMessage[],
-  opts: { json?: boolean; model?: string; maxRetries?: number; maxTokens?: number } = {}
+  opts: { json?: boolean; model?: string } = {}
 ): Promise<string> {
   const model = opts.model || config.groqModel;
-  const maxRetries = opts.maxRetries ?? MAX_RETRIES;
-  const isReasoningModel = /gpt-oss/i.test(model);
   for (let attempt = 0; ; attempt++) {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -115,10 +113,6 @@ export async function groqChat(
         model,
         temperature: opts.json ? 0 : 0.3,
         ...(opts.json ? { response_format: { type: 'json_object' } } : {}),
-        // gpt-oss "thinks" before answering; low effort = far fewer tokens and faster replies.
-        ...(isReasoningModel ? { reasoning_effort: 'low' } : {}),
-        // Caps output so each call counts less against the per-minute token limit.
-        max_completion_tokens: opts.maxTokens ?? 1500,
         messages,
       }),
     });
@@ -132,92 +126,16 @@ export async function groqChat(
 
     const body = await res.text();
     const retryable = res.status === 429 || res.status >= 500;
-    if (retryable && attempt < maxRetries) {
+    if (retryable && attempt < MAX_RETRIES) {
       const wait = retryDelayMs(res, body, attempt);
       console.log(
         `[groqChat] ${res.status}, waiting ${(wait / 1000).toFixed(1)}s ` +
-          `(retry ${attempt + 1}/${maxRetries})...`
+          `(retry ${attempt + 1}/${MAX_RETRIES})...`
       );
       await sleep(wait);
       continue;
     }
 
-    throw new Error(
-      `Groq request failed: ${res.status} ${body}. ` +
-        `Check that GROQ_API_KEY is set and the "${model}" model name is valid.`
-    );
-  }
-}
-
-/**
- * Streaming version of groqChat: calls onToken with each piece of text as Groq writes it,
- * so the dashboard can show the answer immediately instead of waiting for the whole reply.
- */
-export async function groqChatStream(
-  messages: ChatMessage[],
-  onToken: (text: string) => void,
-  // maxWaitMs: if Groq asks us to wait longer than this, fail immediately instead of hanging silently.
-  opts: { model?: string; maxRetries?: number; maxTokens?: number; signal?: AbortSignal; maxWaitMs?: number; temperature?: number } = {}
-): Promise<void> {
-  const model = opts.model || config.groqModel;
-  const maxRetries = opts.maxRetries ?? MAX_RETRIES;
-  const isReasoningModel = /gpt-oss/i.test(model);
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      signal: opts.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.groqApiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        stream: true,
-        temperature: opts.temperature ?? 0.3,
-        ...(isReasoningModel ? { reasoning_effort: 'low' } : {}),
-        max_completion_tokens: opts.maxTokens ?? 1000,
-        messages,
-      }),
-    });
-
-    if (res.ok && res.body) {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        buffer += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, nl).trim();
-          buffer = buffer.slice(nl + 1);
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim();
-          if (data === '[DONE]') return;
-          try {
-            const piece = JSON.parse(data)?.choices?.[0]?.delta?.content;
-            if (piece) onToken(piece);
-          } catch {
-            /* ignore partial or non-JSON keep-alive lines */
-          }
-        }
-      }
-    }
-
-    const body = await res.text();
-    const retryable = res.status === 429 || res.status >= 500;
-    if (retryable && attempt < maxRetries) {
-      const wait = retryDelayMs(res, body, attempt);
-      if (opts.maxWaitMs !== undefined && wait > opts.maxWaitMs) {
-        throw new Error(
-          `Groq ${res.status === 429 ? 'rate limit (429)' : 'error ' + res.status}: would need to wait ${Math.ceil(wait / 1000)}s. ${clipBody(body)}`
-        );
-      }
-      console.log(`[groqChatStream] ${res.status}, waiting ${(wait / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`);
-      await sleep(wait);
-      continue;
-    }
     throw new Error(
       `Groq request failed: ${res.status} ${body}. ` +
         `Check that GROQ_API_KEY is set and the "${model}" model name is valid.`
@@ -246,11 +164,11 @@ export async function reviewDiff(
 ): Promise<ReviewComment[]> {
   const { useRetrieval = true } = options;
   console.log(`[reviewDiff] Retrieving context for ${diff.filePath}...`);
-  const context = useRetrieval ? await retrieveRelevantChunks(diff.patch, RETRIEVAL_TOP_K) : [];
+  const context = useRetrieval ? await retrieveRelevantChunks(diff.patch, 5) : [];
   console.log(`[reviewDiff] Retrieved ${context.length} chunks. Calling Groq...`);
 
   const contextBlock = context
-    .map((c) => `--- ${c.filePath} ---\n${c.content.slice(0, CHUNK_MAX_CHARS)}`)
+    .map((c) => `--- ${c.filePath} ---\n${c.content}`)
     .join('\n\n');
 
   const userMessage = `Repo context (existing code, for convention reference):
