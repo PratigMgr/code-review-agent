@@ -80,6 +80,7 @@ Correct output: { "comments": [] }
 (This is correct and complete as written — do not suggest docs, edge-case handling, or exports it doesn't need.)`;
 
 const MAX_RETRIES = 6;
+const MAX_WAIT_MS = 90_000; // longer than this = daily limit; fail fast instead of hanging
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** How long Groq wants us to wait after a 429, in ms (header first, then message text). */
@@ -128,6 +129,14 @@ export async function groqChat(
     const retryable = res.status === 429 || res.status >= 500;
     if (retryable && attempt < MAX_RETRIES) {
       const wait = retryDelayMs(res, body, attempt);
+      if (wait > MAX_WAIT_MS) {
+        // A wait this long means a daily (TPD) limit, not the per-minute one. Waiting won't help.
+        const mins = Math.ceil(wait / 60000);
+        throw new Error(
+          `Groq rate limit needs a ${mins}-minute wait, which looks like the daily token limit. ` +
+            `Try again later, use a different model, or upgrade your Groq tier. Details: ${body}`
+        );
+      }
       console.log(
         `[groqChat] ${res.status}, waiting ${(wait / 1000).toFixed(1)}s ` +
           `(retry ${attempt + 1}/${MAX_RETRIES})...`
